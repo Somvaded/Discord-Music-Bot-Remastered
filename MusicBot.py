@@ -47,7 +47,7 @@ async def skip(interaction: discord.Interaction):
         await interaction.response.send_message("Not playing anything to skip.")
 
 
-@bot.tree.command(name="pause", description="Pause the currently playing song.")
+@bot.tree.command(name="rukja", description="Pause the currently playing song.")
 async def pause(interaction: discord.Interaction):
     voice_client = interaction.guild.voice_client
 
@@ -64,7 +64,7 @@ async def pause(interaction: discord.Interaction):
     await interaction.response.send_message("Playback paused!")
 
 
-@bot.tree.command(name="resume", description="Resume the currently paused song.")
+@bot.tree.command(name="chala", description="Resume the currently paused song.")
 async def resume(interaction: discord.Interaction):
     voice_client = interaction.guild.voice_client
 
@@ -81,13 +81,15 @@ async def resume(interaction: discord.Interaction):
     await interaction.response.send_message("Playback resumed!")
 
 
-@bot.tree.command(name="stop", description="Stop playback and clear the queue.")
+@bot.tree.command(name="bandkar", description="Stop playback and clear the queue.")
 async def stop(interaction: discord.Interaction):
+    await interaction.response.defer()
     voice_client = interaction.guild.voice_client
 
     # Check if the bot is in a voice channel
     if not voice_client or not voice_client.is_connected():
-        return await interaction.response.send_message("I'm not connected to any voice channel.")
+        await interaction.followup.send("I'm not connected to any voice channel.")
+        return
 
     # Clear the guild's queue
     guild_id_str = str(interaction.guild_id)
@@ -101,43 +103,49 @@ async def stop(interaction: discord.Interaction):
     # (Optional) Disconnect from the channel
     await voice_client.disconnect()
 
-    await interaction.response.send_message("Stopped playback and disconnected!")
+    await interaction.followup.send("Stopped playback and disconnected!")
 
 
-@bot.tree.command(name="play", description="Play a song or add it to the queue.")
+@bot.tree.command(name="bajabc", description="Play a song or add it to the queue.")
 @app_commands.describe(song_query="Search query")
 async def play(interaction: discord.Interaction, song_query: str):
     await interaction.response.defer()
-
-    voice_channel = interaction.user.voice.channel
-
-    if voice_channel is None:
+    if not interaction.user.voice.channel :
         await interaction.followup.send("You must be in a voice channel.")
         return
-
-    voice_client = interaction.guild.voice_client
-
-    if voice_client is None:
-        voice_client = await voice_channel.connect()
-    elif voice_channel != voice_client.channel:
-        await voice_client.move_to(voice_channel)
-
+     # High-quality yt-dlp options
     ydl_options = {
-        "format": "bestaudio[abr<=96]/bestaudio",
+        "format": "bestaudio[abr<=128]/bestaudio[abr<=256]/bestaudio",  # Limit bitrate to prevent distortion
         "noplaylist": True,
         "youtube_include_dash_manifest": False,
         "youtube_include_hls_manifest": False,
+        "extractaudio": True,  # Extract audio only
+        "audioformat": "opus",  # Prefer Opus format (Discord native)
+        "audioquality": "2",  # Slightly lower quality to prevent distortion (0-9, lower is better)
+        "prefer_ffmpeg": True,  # Use FFmpeg for processing
+        "postprocessor_args": [
+            "-ar", "48000",  # Sample rate 48kHz (Discord's native rate)
+            "-ac", "2",      # Stereo audio
+            "-af", "highpass=f=30,lowpass=f=15000",  # Filter extreme frequencies
+        ],
     }
 
     query = "ytsearch1: " + song_query
     results = await search_ytdlp_async(query, ydl_options)
     tracks = results.get("entries", [])
 
-    if tracks is None:
+    if len(tracks) == 0:
         await interaction.followup.send("No results found.")
         return
+    voice_channel = interaction.user.voice.channel
+    voice_client = interaction.guild.voice_client
 
+    if voice_client is None:
+        voice_client = await voice_channel.connect()
+    elif voice_channel != voice_client.channel:
+        await voice_client.move_to(voice_channel)
     first_track = tracks[0]
+
     audio_url = first_track["url"]
     title = first_track.get("title", "Untitled")
 
@@ -159,11 +167,23 @@ async def play_next_song(voice_client, guild_id, channel):
         audio_url, title = SONG_QUEUES[guild_id].popleft()
 
         ffmpeg_options = {
-            "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
-            "options": "-vn -c:a libopus -b:a 96k",
-            # Remove executable if FFmpeg is in PATH
+            "before_options": (
+                "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
+                "-fflags +discardcorrupt"  # Handle corrupted packets better
+            ),
+            "options": (
+                "-vn "  # No video
+                "-ar 48000 "  # Sample rate 48kHz (Discord native)
+                "-ac 2 "  # Stereo
+                "-b:a 128k "  # Reduced bitrate to prevent bass distortion
+                "-acodec libopus "  # Use Opus codec
+                "-f opus "  # Output format
+                "-compression_level 10 "  # Best compression quality
+                "-frame_duration 20 "  # Frame duration in ms
+                "-application audio "  # Optimize for audio
+                "-af \"highpass=f=20,lowpass=f=20000,dynaudnorm=f=500:g=31\" "  # Audio filters to prevent distortion
+            ),
         }
-
         source = discord.FFmpegOpusAudio(audio_url, **ffmpeg_options, executable="bin\\ffmpeg\\ffmpeg.exe")
 
         def after_play(error):
@@ -172,7 +192,7 @@ async def play_next_song(voice_client, guild_id, channel):
             asyncio.run_coroutine_threadsafe(play_next_song(voice_client, guild_id, channel), bot.loop)
 
         voice_client.play(source, after=after_play)
-        asyncio.create_task(channel.send(f"Now playing: **{title}**"))
+        # asyncio.create_task(channel.send(f"Now playing: **{title}**"))
     else:
         await voice_client.disconnect()
         SONG_QUEUES[guild_id] = deque()
